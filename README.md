@@ -6,6 +6,26 @@ Each 1000 rpm segment is one party member (name + stacks), so five players at fu
 > **Created by [Claude](https://www.anthropic.com/claude) (Anthropic)** in a collaborative session with the repository owner, who
 > directed the design, tested it in-game and supplied the debug logs that shaped it. See [Credits](#credits).
 
+## Demos
+
+> These animations are **rendered from simulated party data** by [`tools/render_demos.py`](tools/render_demos.py), a Python port of the
+> plugin's drawing code (same geometry, presets and fire logic). They are not in-game screen captures: in game the text uses ImGui's font
+> and the numbers come from ArcDPS (about 2.65 s late). The skin art in the last demo is a generated placeholder.
+
+| | |
+|---|---|
+| <b>Default theme</b><br><img src="docs/gifs/default-dial.gif" width="400" alt="Default theme"> | <b>Toyota Altezza preset</b><br><img src="docs/gifs/toyota-altezza.gif" width="400" alt="Toyota Altezza preset"> |
+| <b>Toyota Starlet preset</b><br><img src="docs/gifs/toyota-starlet.gif" width="400" alt="Toyota Starlet preset"> | <b>Lexus LFA preset</b><br><img src="docs/gifs/lexus-lfa.gif" width="400" alt="Lexus LFA preset"> |
+| <b>Half dial</b><br><img src="docs/gifs/half-dial.gif" width="400" alt="Half dial"> | <b>Shift-light bar</b><br><img src="docs/gifs/shift-bar.gif" width="400" alt="Shift-light bar"> |
+| <b>Combined dial (several boons averaged)</b><br><img src="docs/gifs/multi-boon-combined.gif" width="400" alt="Combined dial (several boons averaged)"> | <b>Customisation (fill, needle, ticks, colours)</b><br><img src="docs/gifs/customisation.gif" width="400" alt="Customisation (fill, needle, ticks, colours)"> |
+| <b>Window: resize and opacity</b><br><img src="docs/gifs/window-options.gif" width="400" alt="Window: resize and opacity"> | <b>Skin image (layering and opacity)</b><br><img src="docs/gifs/skin-image.gif" width="400" alt="Skin image (layering and opacity)"> |
+
+**Several boons at once, as separate dials** (Stability, Might, Fury, Quickness):
+
+<img src="docs/gifs/multi-boon-separate.gif" width="720" alt="Separate dials for four boons">
+
+Regenerate them with `python3 tools/render_demos.py` (needs Pillow).
+
 ## Features
 
 **Gauge**
@@ -62,7 +82,7 @@ cmake --build build --config Release
 ```
 
 Output: `build/Release/d3d11_arcdps_stability_tach.dll`. CMake downloads Dear ImGui (pinned) and stb as zip files.
-Or push to GitHub: `.github/workflows/build.yml` builds on a Windows runner and attaches the DLL; pushing a tag like `v1.1.0` also creates a Release.
+Or push to GitHub: `.github/workflows/build.yml` builds on a Windows runner and attaches the DLL; pushing a tag like `v1.1.1` also creates a Release.
 
 ## How it works
 
@@ -77,7 +97,7 @@ the live set of buff stacks.
 
 ## Known limitations / status
 
-- Version 1.1.0 (themes, multi-boon) is new and lightly tested; the stability tracking itself was verified in-game against debug logs.
+- Version 1.1.1 (themes, multi-boon) is new and lightly tested; the stability tracking itself was verified in-game against debug logs.
 - Skill ids for the non-stability boons come from commonly published GW2 ids; if a boon reads wrong, enable the debug log.
 - Duration-stacking boons are assumed to report stack events like stability does; they are treated as on/off.
 - Car presets are approximations from memory and meant as starting points.
@@ -87,6 +107,7 @@ the live set of buff stacks.
 
 `src/main.cpp` plugin glue, event handling and options UI - `src/tracker.*` per-player boon stacks - `src/gauge.*` rendering and layouts -
 `src/settings.*` ini + theme presets - `src/boons.h` boon table - `src/skin.*` DX11 texture loader - `src/log.*` rolling log.
+`tools/render_demos.py` generates the demo GIFs in `docs/gifs/`.
 `tests/` holds a logic test (stack tracking, presets, settings round trip) and stub headers for syntax-checking without Windows/ImGui.
 
 ## Credits
