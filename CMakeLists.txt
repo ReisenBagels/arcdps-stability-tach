@@ -23,7 +23,7 @@ add_library(stability_tach SHARED
   ${imgui_SOURCE_DIR}/imgui.cpp ${imgui_SOURCE_DIR}/imgui_draw.cpp
   ${imgui_SOURCE_DIR}/imgui_tables.cpp ${imgui_SOURCE_DIR}/imgui_widgets.cpp)
 target_include_directories(stability_tach PRIVATE src ${imgui_SOURCE_DIR} ${stb_SOURCE_DIR})
-target_link_libraries(stability_tach PRIVATE d3d11 dxgi)
+target_link_libraries(stability_tach PRIVATE d3d11 dxgi shell32)
 target_compile_definitions(stability_tach PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 # ArcDPS loads plugins named d3d11_arcdps_*.dll
 set_target_properties(stability_tach PROPERTIES PREFIX "" OUTPUT_NAME "d3d11_arcdps_stability_tach")

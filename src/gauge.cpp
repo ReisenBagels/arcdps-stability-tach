@@ -11,11 +11,7 @@ namespace {
 constexpr float kPi = 3.14159265f, CW = 640.f;
 float rad(float d) { return d * kPi / 180.f; }
 float frand() { return (float)rand() / (float)RAND_MAX; }
-float cellH(int type) { return type == 1 ? 370.f : type == 2 ? 225.f : 500.f; }
-
-struct Particle { float x, y, vx, vy, l, s; };
-struct DialState { float needle = 0.f, acc = 0.f; std::vector<Particle> parts; };
-DialState g_state[4];
+float cellH(int type) { return type == 1 ? 370.f : type == 2 ? 225.f : 560.f; }   // 560: whole bezel (reaches y=548) is visible
 
 struct DialData { std::string label, name[5]; float frac[5] = {0, 0, 0, 0, 0}; int val[5] = {0, 0, 0, 0, 0}; bool pct = false; int n = 0; };
 struct Geo { int type; float CX, CY, R, START, SWEEP, SEG; };
@@ -26,7 +22,7 @@ Geo geoFor(int type) {
 }
 
 ImU32 col3(const float* c, float a = 1.f) { return ImGui::ColorConvertFloat4ToU32(ImVec4(c[0], c[1], c[2], a)); }
-ImU32 segColor(const Settings& s, int i, float f) {
+ImU32 segColor(const TachoCfg& s, int i, float f) {
     if (!s.gradient) return col3(s.playerCol[i]);
     float r, g, b; ImGui::ColorConvertHSVtoRGB(f * 0.333f, 0.85f, 0.9f, r, g, b);
     return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, 1.f));
@@ -43,13 +39,13 @@ void text(ImDrawList* dl, ImVec2 o, float sc, const std::string& t, float x, flo
     dl->AddText(f, fs, p, c, t.c_str());
 }
 
-std::vector<int> selectedBoons(const Settings& s) {
+std::vector<int> selectedBoons(const TachoCfg& s) {
     std::vector<int> v;
     for (int i = 0; i < BOON_COUNT; i++) if ((s.boonMask >> i) & 1) v.push_back(i);
     if (v.empty()) v.push_back(0);
     return v;
 }
-int dialCount(const Settings& s) {
+int dialCount(const TachoCfg& s) {
     auto sel = selectedBoons(s);
     return (s.boonMode == 1 && sel.size() > 1) ? 1 : (int)std::min<size_t>(4, sel.size());
 }
@@ -69,13 +65,13 @@ DialData build(const std::vector<PartySlot>& slots, const std::vector<int>& boon
 }
 
 // ---- fire (shared by all layouts) ----
-void fireStep(ImDrawList* dl, ImVec2 o, float sc, const Geo& g, DialState& st, const Settings& s, bool fire, ImVec2 tip, float dt) {
+void fireStep(ImDrawList* dl, ImVec2 o, float sc, const Geo& g, DialState& st, const TachoCfg& s, bool fire, ImVec2 tip, float dt) {
     auto P = [&](float x, float y) { return ImVec2(o.x + x * sc, o.y + y * sc); };
     if (!s.fireOn) st.parts.clear();
     if (fire) {
-        st.acc += s.fireAmt * 60.f * dt;
+        st.acc += s.fireAmt * 60.f * dt * (g.type == 2 ? 0.3f : 1.f);   // the bar is short: fewer, smaller flames so labels stay readable
         for (; st.acc >= 1.f; st.acc -= 1.f) {
-            if (g.type == 2) st.parts.push_back({50.f + frand() * 540.f, 112.f, (frand() - .5f) * 1.2f, -1.5f - frand() * 2.8f, 1.f, 10 + frand() * 16});
+            if (g.type == 2) st.parts.push_back({50.f + frand() * 540.f, 112.f, (frand() - .5f) * 1.0f, -1.2f - frand() * 2.0f, 1.f, 6 + frand() * 8});
             else {
                 float a = rad(g.START + frand() * g.SWEEP), rr = g.R + 10 + frand() * 16;
                 st.parts.push_back({g.CX + cosf(a) * rr, g.CY + sinf(a) * rr, (frand() - .5f) * 1.2f, -1.5f - frand() * 2.8f, 1.f, 10 + frand() * 16});
@@ -95,18 +91,19 @@ void fireStep(ImDrawList* dl, ImVec2 o, float sc, const Geo& g, DialState& st, c
     }
 }
 
-void drawSkin(ImDrawList* dl, ImVec2 o, float sc, const Settings& s, float cy, float k) {
+void drawSkin(ImDrawList* dl, ImVec2 o, float sc, const TachoCfg& s, float cy, float k) {
     if (!s.imgOn) return;
-    ImTextureID tex = Skin::texture();
-    if (!tex) return;
-    float h = s.imgSize * k, w = h * Skin::aspect();
+    const Skin::Info& si = Skin::get(s.skinFile);   // loads from disk on first use; retries if the file shows up later
+    if (!si.ok) return;
+    ImTextureID tex = si.tex;
+    float h = s.imgSize * k, w = h * si.aspect;
     auto P = [&](float x, float y) { return ImVec2(o.x + x * sc, o.y + y * sc); };
     dl->AddImage(tex, P(320 - w / 2, cy - h / 2), P(320 + w / 2, cy + h / 2), ImVec2(0, 0), ImVec2(1, 1),
                  IM_COL32(255, 255, 255, (int)(std::clamp(s.imgOpacity, 0.f, 1.f) * 255)));
 }
 
 // ---- round (270 deg) and half (180 deg) dials ----
-ImVec2 drawRound(ImDrawList* dl, ImVec2 o, float sc, const Geo& g, DialState& st, const DialData& d, const Settings& s, bool fire, bool all, bool skin, bool shadow) {
+ImVec2 drawRound(ImDrawList* dl, ImVec2 o, float sc, const Geo& g, DialState& st, const DialData& d, const TachoCfg& s, bool fire, bool all, bool skin, bool shadow) {
     auto P = [&](float x, float y) { return ImVec2(o.x + x * sc, o.y + y * sc); };
     const float CX = g.CX, CY = g.CY, R = g.R, START = g.START, SWEEP = g.SWEEP, SEG = g.SEG;
     const bool half = g.type == 1;
@@ -212,7 +209,7 @@ ImVec2 drawRound(ImDrawList* dl, ImVec2 o, float sc, const Geo& g, DialState& st
 }
 
 // ---- horizontal bar ----
-ImVec2 drawBar(ImDrawList* dl, ImVec2 o, float sc, DialState& st, const DialData& d, const Settings& s, bool all, bool shadow) {
+ImVec2 drawBar(ImDrawList* dl, ImVec2 o, float sc, DialState& st, const DialData& d, const TachoCfg& s, bool all, bool shadow) {
     auto P = [&](float x, float y) { return ImVec2(o.x + x * sc, o.y + y * sc); };
     constexpr float BX0 = 50, BX1 = 590, BY0 = 112, BY1 = 160, SW = (BX1 - BX0) / 5.f;
     const ImU32 cText = col3(s.cText), cTick = col3(s.cTick), cMaxC = col3(s.cMax), bez = col3(s.cBezel);
@@ -258,12 +255,12 @@ ImVec2 drawBar(ImDrawList* dl, ImVec2 o, float sc, DialState& st, const DialData
 }
 }  // namespace
 
-ImVec2 GaugeDesignSize(const Settings& s) {
+ImVec2 GaugeDesignSize(const TachoCfg& s) {
     int n = dialCount(s), cols = n == 1 ? 1 : 2, rows = (n + cols - 1) / cols;
     return ImVec2(cols * CW, rows * cellH(s.tType));
 }
 
-void DrawGauge(const std::vector<PartySlot>& slots, const Settings& s, ImDrawList* dl, ImVec2 o, float sc, float dt) {
+void DrawGauge(const std::vector<PartySlot>& slots, const TachoCfg& s, ImDrawList* dl, ImVec2 o, float sc, float dt, GaugeState& gs) {
     auto sel = selectedBoons(s);
     std::vector<DialData> dials;
     if (s.boonMode == 1 && sel.size() > 1) dials.push_back(build(slots, sel));
@@ -277,7 +274,7 @@ void DrawGauge(const std::vector<PartySlot>& slots, const Settings& s, ImDrawLis
     for (int di = 0; di < n; di++) {
         const DialData& d = dials[di];
         ImVec2 co(o.x + (di % cols) * CW * sc, o.y + (di / cols) * ch * sc);
-        DialState& st = g_state[di];
+        DialState& st = gs.dial[di];
         float total = 0.f; bool all = d.n > 0;
         for (int i = 0; i < d.n; i++) { total += d.frac[i] * 1000.f; if (d.frac[i] < 0.999f) all = false; }
         st.needle += (total - st.needle) * std::min(1.f, dt * s.needleSmooth);

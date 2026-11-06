@@ -46,6 +46,10 @@ def make_cfg(preset=0, **over):
         c.update(tType=1, tTicks=1)
     elif preset == 5:
         c.update(tType=2, tShape=1, tFill=1, tTicks=1, tRedline=True, tNeedle=1, needleCol=(1, 1, 1))
+    elif preset == 6:  # GM squarebody pickup-inspired
+        c.update(tShape=1, tTicks=2, tRedline=True, tBezelW=6.0, needleThick=3.0, needleLen=0.95, cFace=(.04, .04, .045), cFace2=(.10, .10, .11),
+                 cBezel=(.55, .55, .58), cText=(.93, .90, .80), cTick=(.93, .90, .80), cTrack=(.12, .12, .13), cHub=(.35, .35, .37),
+                 cReadout=(.95, .90, .75), cMax=(1, .55, .15), needleCol=(1, .28, .08), cRedline=(.85, .12, .08))
     c.update(over)
     return c
 
@@ -300,6 +304,55 @@ def make_gif(name, duration, data_fn, boons=(0,), combined=False, cfg=None, cfg_
     q[0].save(path, save_all=True, append_images=q[1:], duration=int(1000 / fps), loop=0, optimize=True, disposal=1)
     print("%-22s %3d frames %5.2f MB  %s" % (name, len(q), os.path.getsize(path) / 1e6, os.path.basename(path)))
 
+def make_multi_gif(name, duration, tachos, canvas, data_fn, caption, fps=10, seed=3):
+    """Several independent tachos (own theme / boons / size / opacity / skin) on one backdrop, like several ImGui windows."""
+    rnd = random.Random(seed); W, H = canvas; CAP = 34
+    emb = emblem()
+    ts = []
+    for t in tachos:
+        c = t["cfg"]; g = geo(c["tType"]); boons = list(t["boons"]); comb = t.get("combined", False)
+        n = 1 if comb else min(4, len(boons)); cols = 1 if n == 1 else 2; rows = (n + cols - 1) // cols
+        ts.append(dict(t=t, c=c, g=g, boons=boons, comb=comb, n=n, cols=cols, cell=cell_h(c["tType"]),
+                       sc=t["width"] / (cols * CW), states=[State() for _ in range(n)]))
+    frames, dt = [], 1 / 60; every = 60 // fps
+    for step in range(int(duration * 60)):
+        tm = step * dt; slots = data_fn(tm)
+        for T in ts:
+            T["sets"] = [build(slots, T["boons"], True)] if T["comb"] else [build(slots, [b], False) for b in T["boons"][:4]]
+            T["fires"] = [update(T["states"][i], d, T["c"], T["g"], dt, rnd) for i, d in enumerate(T["sets"])]
+        if step % every: continue
+        img = backdrop(W * K, H * K)
+        for T in ts:
+            c, g, sc = T["c"], T["g"], T["sc"]; ox, oy = T["t"]["pos"]; op = T["t"].get("opacity", 1.0)
+            layer = img.copy() if op < 0.999 else img
+            lum = .3 * c["cFace"][0] + .59 * c["cFace"][1] + .11 * c["cFace"][2]
+            for i, d in enumerate(T["sets"]):
+                cv = Cv(layer, (ox + (i % T["cols"]) * CW * sc) * K, (oy + (i // T["cols"]) * T["cell"] * sc) * K, sc)
+                fire, allm = T["fires"][i]
+                if g[0] == 2: draw_bar(cv, T["states"][i], d, c, allm, lum < .5)
+                else:
+                    def skin_cb(cv_, y, k, c=c, i=i):
+                        if i or not c["imgOn"]: return
+                        h = c["imgSize"] * k; e = emb.resize((max(1, int(cv_.px(h))), max(1, int(cv_.px(h)))), Image.LANCZOS)
+                        a = e.getchannel("A").point(lambda v: int(v * c["imgOpacity"])); e.putalpha(a)
+                        x, yy = cv_.P(320 - h / 2, y - h / 2); cv_.im.paste(e, (int(x), int(yy)), e)
+                    draw_round(cv, g, T["states"][i], d, c, fire, allm, skin_cb, lum < .5)
+                draw_fire(cv, T["states"][i], c)
+            if op < 0.999: img = Image.blend(img, layer, op)
+        small = img.resize((W, H), Image.LANCZOS)
+        out = Image.new("RGB", (W, H + CAP), (14, 18, 26)); out.paste(small, (0, 0))
+        dr = ImageDraw.Draw(out); fs = 15
+        while fs > 10 and dr.textlength(caption, font=font(fs)) > W - 20: fs -= 1
+        dr.text((12, H + CAP // 2), caption, font=font(fs), fill=(205, 212, 224), anchor="lm")
+        frames.append(out)
+    sample = Image.new("RGB", (W, (H + CAP) * min(8, len(frames))))
+    for i, idx in enumerate(range(0, len(frames), max(1, len(frames) // 8))[:8]): sample.paste(frames[idx], (0, i * (H + CAP)))
+    pal = sample.quantize(colors=224, method=Image.Quantize.MEDIANCUT)
+    q = [f.quantize(palette=pal, dither=Image.Dither.NONE) for f in frames]
+    os.makedirs(OUT, exist_ok=True); path = os.path.join(OUT, name + ".gif")
+    q[0].save(path, save_all=True, append_images=q[1:], duration=int(1000 / fps), loop=0, optimize=True, disposal=1)
+    print("%-22s %3d frames %5.2f MB  %s" % (name, len(q), os.path.getsize(path) / 1e6, os.path.basename(path)))
+
 # ------------------------------------------------------------------ synthetic party data
 def ss(x): x = min(1.0, max(0.0, x)); return x * x * (3 - 2 * x)
 def stab(t, i): return int(round(25 * ss((t - .4 - .3 * i) / 1.4) * (1 - ss((t - 4.5 - .15 * i) / .9))))
@@ -328,6 +381,7 @@ def jobs():
     yield "lexus-lfa", dict(duration=T_MAIN, data_fn=slots_main, cfg=make_cfg(3), caption="Lexus LFA preset (inspired): digital look, LED segments, thin needle")
     yield "half-dial", dict(duration=T_MAIN, data_fn=slots_main, cfg=make_cfg(4), width=560, caption="Half dial (180 degrees)")
     yield "shift-bar", dict(duration=T_MAIN, data_fn=slots_main, cfg=make_cfg(5, fireCol=(.35, .65, 1.0)), width=620, caption="Shift-light bar with LED segments and a blue flame")
+    yield "gm-squarebody", dict(duration=T_MAIN, data_fn=slots_main, cfg=make_cfg(6), caption="GM Squarebody pickup preset (inspired): rounded-square cluster, orange needle")
     yield "multi-boon-separate", dict(duration=T_MAIN, data_fn=slots_main, boons=(0, 1, 2, 3), cfg=make_cfg(0), width=760,
                                       caption="Separate dials: Stability, Might, Fury, Quickness")
     yield "multi-boon-combined", dict(duration=T_MAIN, data_fn=slots_full, boons=(0, 1, 2, 3), combined=True, cfg=make_cfg(0),
@@ -352,7 +406,17 @@ def jobs():
                              cfg_fn=lambda t: make_cfg(0, imgOn=True, imgSize=130.0, imgYOff=32.0, imgAbove=(t < 2.0 or t >= 4.0), imgOpacity=(1.0 if t < 4.0 else .45)),
                              caption=lambda t: "Skin image (placeholder art): %s" % ("above needle" if t < 2 else "below needle" if t < 4 else "above needle, 45% opacity"))
 
+def multi_jobs():
+    yield "multi-tacho", dict(
+        duration=T_MAIN, canvas=(900, 500), data_fn=slots_full,
+        caption="Three tachos at once: each has its own theme, boons, size, opacity and skin",
+        tachos=[dict(cfg=make_cfg(1, imgOn=True, imgSize=110.0, imgYOff=34.0, imgOpacity=1.0), boons=(0,), pos=(10, 10), width=400, opacity=1.0),
+                dict(cfg=make_cfg(5, fireCol=(.35, .65, 1.0)), boons=(1,), pos=(430, 10), width=450, opacity=0.85),
+                dict(cfg=make_cfg(6, imgOn=True, imgAbove=False, imgSize=120.0, imgYOff=34.0, imgOpacity=0.5), boons=(3, 2), combined=True, pos=(500, 190), width=330, opacity=0.8)])
+
 if __name__ == "__main__":
     want = set(sys.argv[1:])
     for name, kw in jobs():
         if not want or name in want: make_gif(name, **kw)
+    for name, kw in multi_jobs():
+        if not want or name in want: make_multi_gif(name, **kw)

@@ -1,5 +1,6 @@
-// Stability Tach - ArcDPS plugin. Party boons as a tachometer (1000 rpm per player, max 5000).
+// Stability Tach - ArcDPS plugin. Party boons as one or more tachometers (1000 rpm per player, max 5000).
 #include <imgui.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -12,22 +13,56 @@
 #include "skin.h"
 #include "tracker.h"
 
-static const char* kSkinPath = "addons/arcdps/stability_tach/skin.png";
-static bool g_dirty = false, g_forceSize = false, g_forcePos = false;   // force* set by the options UI, applied next frame
-static float g_aspect = 500.f / 640.f;                                    // window height / width for the current layout
-static void* g_d3d = nullptr; static unsigned g_d3dver = 0;
+static bool g_dirty = false;
+static void* g_d3d = nullptr; static unsigned g_d3dArg = 0;
 static std::atomic<unsigned long long> g_evTotal{0}, g_evBuff{0}, g_evBoon{0};
 static std::atomic<unsigned long long> g_scCount[256];
+static std::atomic<int> g_boonUnion{1};     // boons tracked by at least one visible tacho (events for others are ignored cheaply)
 typedef unsigned long long ull;
 static const char* S(const char* s) { return s ? s : "(null)"; }
-static bool selected(int boon) { return boon >= 0 && ((cfg.boonMask >> boon) & 1); }
+static bool selected(int boon) { return boon >= 0 && ((g_boonUnion.load() >> boon) & 1); }
 static int firstSelected() { for (int i = 0; i < BOON_COUNT; i++) if (selected(i)) return i; return 0; }
 
-static void LogHeader() {
-    Log::write("==== Stability Tach 1.1.0 debug log ==== imgui=%d d3dver=%u rosterMode=%d timerMode=%d boonMask=%d boonMode=%d showSolo=%d demo=%d verbose=%d delay=%.0f",
-               IMGUI_VERSION_NUM, g_d3dver, cfg.rosterMode, cfg.timerMode, cfg.boonMask, cfg.boonMode, cfg.showSolo, cfg.demo, cfg.debugVerbose, cfg.eventDelayMs);
+// per-tacho runtime state (not saved)
+struct TachoRt { float aspect = 560.f / 640.f; bool forceSize = false, forcePos = false; GaugeState gs; };
+static std::vector<TachoRt> g_rt;
+static int g_sel = 0;                       // tacho being edited in the options UI
+static std::string g_note;                  // short feedback line in the options UI
+static int g_action = 0;                    // structural edit requested by the UI, applied at a safe point: 1 add, 2 duplicate, 3 remove, 4 reset everything
+static void syncRt() { if (g_rt.size() != cfg.tachos.size()) g_rt.resize(cfg.tachos.size()); g_sel = std::min(std::max(g_sel, 0), (int)cfg.tachos.size() - 1); }
+
+static void ApplyPending() {   // never called while a reference into cfg.tachos is held
+    if (!g_action) return;
+    const int a = g_action; g_action = 0;
+    syncRt();
+    if (a == 1 || a == 2) {
+        if ((int)cfg.tachos.size() >= kMaxTachos) return;
+        TachoCfg t = (a == 2) ? cfg.tachos[g_sel] : TachoCfg();
+        t.name = (a == 2) ? t.name + " copy" : "Tacho " + std::to_string(cfg.tachos.size() + 1);
+        t.winX += 40.f * (float)cfg.tachos.size(); t.winY += 40.f; t.enabled = true;
+        cfg.tachos.push_back(t); g_sel = (int)cfg.tachos.size() - 1; syncRt();
+        g_rt[g_sel].forcePos = g_rt[g_sel].forceSize = true;
+    } else if (a == 3 && cfg.tachos.size() > 1) {
+        cfg.tachos.erase(cfg.tachos.begin() + g_sel);
+        if (g_sel < (int)g_rt.size()) g_rt.erase(g_rt.begin() + g_sel);
+        syncRt();
+    } else if (a == 4) {
+        cfg.reset(); Log::setEnabled(cfg.debugLog); g_rt.clear(); g_sel = 0; syncRt();
+        for (auto& r : g_rt) r.forceSize = r.forcePos = true;
+    }
+    g_dirty = true;
 }
-static void LogDump() {   // roster as the gauge sees it (first selected boon) + counters
+
+static void LogHeader() {
+    Log::write("==== Stability Tach 1.2.0 debug log ==== imgui=%d lastInitArg=%u tachos=%zu rosterMode=%d timerMode=%d showSolo=%d demo=%d verbose=%d delay=%.0f",
+               IMGUI_VERSION_NUM, g_d3dArg, cfg.tachos.size(), cfg.rosterMode, cfg.timerMode, cfg.showSolo, cfg.demo, cfg.debugVerbose, cfg.eventDelayMs);
+    Log::write("SKIN device: %s", Skin::deviceStatus().c_str());
+    for (size_t i = 0; i < cfg.tachos.size(); i++) {
+        auto& t = cfg.tachos[i];
+        Log::write("TACHO %zu '%s' enabled=%d boonMask=%d type=%d preset=%d skin='%s' img=%d", i, t.name.c_str(), t.enabled, t.boonMask, t.tType, t.themePreset, t.skinFile.c_str(), t.imgOn);
+    }
+}
+static void LogDump() {   // roster as the gauge sees it (first tracked boon) + counters
     auto slots = tracker.snapshot(cfg.rosterMode, cfg.timerMode == 0);
     int b = firstSelected();
     std::string r;
@@ -96,8 +131,6 @@ static uintptr_t mod_combat(cbtevent* ev, ag* src, ag* dst, const char* skillnam
     const bool isBuff = ev->buff || ev->is_buffremove;
     if (isBuff) g_evBuff++;
     if (dbg) {
-        // Log events of tracked boons, plus any skill named like Stability (to catch a changed id). Verbose: every buff event
-        // that touches a tracked player.
         const bool relevant = selected(bi) || (skillname && std::strstr(skillname, "tability"));
         const bool verbose = cfg.debugVerbose && isBuff && (tracker.known(ev->dst_agent) || tracker.known(ev->src_agent));
         if (relevant || verbose)
@@ -114,10 +147,104 @@ static uintptr_t mod_combat(cbtevent* ev, ag* src, ag* dst, const char* skillnam
 }
 
 // ---------------------------------------------------------------- settings UI
+static std::vector<std::string> skinFiles() {   // directory listing, refreshed every 2s instead of every frame
+    static std::vector<std::string> files; static double last = -10;
+    double t = ImGui::GetTime();
+    if (t - last > 2.0) { last = t; files = Skin::list(); }
+    return files;
+}
+
+static void DrawTachoOptions(TachoCfg& tc, TachoRt& rt, bool& c) {
+    if (ImGui::CollapsingHeader("Boons", ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::string sum; int cnt = 0;
+        for (int i = 0; i < BOON_COUNT; i++) if ((tc.boonMask >> i) & 1) { if (cnt++ < 3) sum += (sum.empty() ? "" : ", ") + std::string(kBoons[i].name); }
+        if (cnt > 3) sum += " +" + std::to_string(cnt - 3);
+        if (ImGui::BeginCombo("Track", sum.c_str())) {
+            for (int i = 0; i < BOON_COUNT; i++) {
+                bool on = (tc.boonMask >> i) & 1;
+                if (ImGui::Checkbox(kBoons[i].name, &on)) {
+                    tc.boonMask = on ? (tc.boonMask | (1 << i)) : (tc.boonMask & ~(1 << i));
+                    if (tc.boonMask == 0) tc.boonMask = 1 << i;   // always keep at least one
+                    c = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        const char* bm[] = {"Separate dials (max 4)", "Combined dial (average)"};
+        c |= ImGui::Combo("Multiple boons", &tc.boonMode, bm, 2);
+        ImGui::TextDisabled("Might/Stability show stacks; other boons show on/off");
+    }
+    if (ImGui::CollapsingHeader("Theme")) {
+        int pre = tc.themePreset;
+        if (ImGui::Combo("Preset", &pre, kPresetNames, kPresetCount)) { tc.applyPreset(pre); c = true; }
+        ImGui::TextDisabled("Car presets are original styles inspired by each cluster");
+        const char* types[] = {"Round dial (270)", "Half dial (180)", "Horizontal bar"};
+        const char* shapes[] = {"Circle", "Rounded square"};
+        const char* needles[] = {"Blade", "Thin line", "Wedge", "None"};
+        const char* fills[] = {"Solid", "LED segments"};
+        const char* ticks[] = {"None", "Major", "Major + minor"};
+        c |= ImGui::Combo("Type", &tc.tType, types, 3);
+        c |= ImGui::Combo("Shape", &tc.tShape, shapes, 2);
+        c |= ImGui::Combo("Needle style", &tc.tNeedle, needles, 4);
+        c |= ImGui::Combo("Fill style", &tc.tFill, fills, 2);
+        c |= ImGui::Combo("Tick marks", &tc.tTicks, ticks, 3);
+        c |= ImGui::Checkbox("Redline zone", &tc.tRedline);
+        c |= ImGui::SliderFloat("Bezel width", &tc.tBezelW, 0.f, 14.f, "%.1f");
+        const ImGuiColorEditFlags ni = ImGuiColorEditFlags_NoInputs;
+        c |= ImGui::ColorEdit3("Face", tc.cFace, ni);        c |= ImGui::ColorEdit3("Face centre", tc.cFace2, ni);
+        c |= ImGui::ColorEdit3("Bezel", tc.cBezel, ni);      c |= ImGui::ColorEdit3("Text", tc.cText, ni);
+        c |= ImGui::ColorEdit3("Ticks / numbers", tc.cTick, ni); c |= ImGui::ColorEdit3("Empty track", tc.cTrack, ni);
+        c |= ImGui::ColorEdit3("Hub", tc.cHub, ni);          c |= ImGui::ColorEdit3("Readout", tc.cReadout, ni);
+        c |= ImGui::ColorEdit3("Maxed highlight", tc.cMax, ni); c |= ImGui::ColorEdit3("Redline colour", tc.cRedline, ni);
+    }
+    if (ImGui::CollapsingHeader("Player colours")) {
+        c |= ImGui::Checkbox("Red-to-green by stacks", &tc.gradient);
+        for (int i = 0; i < 5; i++) { char l[16]; snprintf(l, sizeof l, "Player %d", i + 1); c |= ImGui::ColorEdit3(l, tc.playerCol[i], ImGuiColorEditFlags_NoInputs); }
+    }
+    if (ImGui::CollapsingHeader("Window", ImGuiTreeNodeFlags_DefaultOpen)) {
+        c |= ImGui::Checkbox("Lock position and size", &tc.locked);
+        c |= ImGui::Checkbox("Click-through (use ArcDPS options to change settings)", &tc.clickThrough);
+        if (ImGui::SliderFloat("Width (px)", &tc.winW, 160.f, 1600.f, "%.0f")) { tc.winH = tc.winW * rt.aspect; rt.forceSize = true; c = true; }
+        c |= ImGui::SliderFloat("Opacity", &tc.opacity, 0.1f, 1.f, "%.2f");
+        if (ImGui::Button("Reset position")) { tc.winX = 100.f; tc.winY = 100.f; rt.forcePos = true; c = true; }
+    }
+    if (ImGui::CollapsingHeader("Fire")) {
+        c |= ImGui::Checkbox("Enable fire", &tc.fireOn);
+        c |= ImGui::ColorEdit3("Fire colour", tc.fireCol, ImGuiColorEditFlags_NoInputs);
+        c |= ImGui::SliderFloat("Intensity", &tc.fireAmt, 2.f, 20.f, "%.0f");
+    }
+    if (ImGui::CollapsingHeader("Needle")) {
+        c |= ImGui::ColorEdit3("Needle colour", tc.needleCol, ImGuiColorEditFlags_NoInputs);
+        c |= ImGui::SliderFloat("Length", &tc.needleLen, 0.6f, 1.25f, "%.2f");
+        c |= ImGui::SliderFloat("Thickness", &tc.needleThick, 1.f, 10.f, "%.1f");
+        c |= ImGui::SliderFloat("Response", &tc.needleSmooth, 3.f, 40.f, "%.0f");
+    }
+    if (ImGui::CollapsingHeader("Skin image")) {
+        c |= ImGui::Checkbox("Show image", &tc.imgOn);
+        if (ImGui::BeginCombo("File", tc.skinFile.empty() ? "(none)" : tc.skinFile.c_str())) {
+            if (ImGui::Selectable("(none)", tc.skinFile.empty())) { tc.skinFile.clear(); c = true; }
+            for (auto& f : skinFiles()) if (ImGui::Selectable(f.c_str(), f == tc.skinFile)) { tc.skinFile = f; c = true; }
+            ImGui::EndCombo();
+        }
+        char buf[260]; std::snprintf(buf, sizeof buf, "%s", tc.skinFile.c_str());
+        if (ImGui::InputText("Name or path", buf, sizeof buf)) { tc.skinFile = buf; c = true; }
+        const Skin::Info& si = Skin::get(tc.skinFile);
+        ImGui::TextColored(si.ok ? ImVec4(.4f, 1.f, .5f, 1.f) : ImVec4(1.f, .55f, .45f, 1.f), "%s", si.status.c_str());
+        if (ImGui::Button("Open skins folder")) { if (!Skin::openFolder()) g_note = "Could not open the folder"; }
+        ImGui::SameLine();
+        if (ImGui::Button("Reload images")) Skin::reload();
+        c |= ImGui::Checkbox("Draw above needle", &tc.imgAbove);
+        c |= ImGui::SliderFloat("Image size", &tc.imgSize, 60.f, 280.f, "%.0f");
+        c |= ImGui::SliderFloat("Image opacity", &tc.imgOpacity, 0.1f, 1.f, "%.2f");
+        c |= ImGui::SliderFloat("Y offset", &tc.imgYOff, -60.f, 120.f, "%.0f");
+    }
+}
+
 static void DrawSettings() {
+    syncRt();
     bool c = false;
     ImGui::TextUnformatted("Stability Tach");
-    c |= ImGui::Checkbox("Show window", &cfg.visible);
+    c |= ImGui::Checkbox("Show all tachos", &cfg.visible);
     c |= ImGui::Checkbox("Show when solo", &cfg.showSolo);
     c |= ImGui::Checkbox("Demo mode (fake data)", &cfg.demo);
     const char* modes[] = {"My subgroup", "First 5 players seen"};
@@ -125,93 +252,60 @@ static void DrawSettings() {
     const char* timing[] = {"Events only (no timers)", "Delay-corrected timers"};
     c |= ImGui::Combo("Stack timing", &cfg.timerMode, timing, 2);
 
-    if (ImGui::CollapsingHeader("Boons", ImGuiTreeNodeFlags_DefaultOpen)) {
-        std::string sum; int cnt = 0;
-        for (int i = 0; i < BOON_COUNT; i++) if (selected(i)) { if (cnt++ < 3) sum += (sum.empty() ? "" : ", ") + std::string(kBoons[i].name); }
-        if (cnt > 3) sum += " +" + std::to_string(cnt - 3);
-        if (ImGui::BeginCombo("Track", sum.c_str())) {
-            for (int i = 0; i < BOON_COUNT; i++) {
-                bool on = selected(i);
-                if (ImGui::Checkbox(kBoons[i].name, &on)) {
-                    cfg.boonMask = on ? (cfg.boonMask | (1 << i)) : (cfg.boonMask & ~(1 << i));
-                    if (cfg.boonMask == 0) cfg.boonMask = 1 << i;   // always keep at least one
-                    c = true;
-                }
+    TachoCfg& tc = cfg.tachos[g_sel];
+    TachoRt& rt = g_rt[g_sel];
+    if (ImGui::CollapsingHeader("Tachos", ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::string cur = std::to_string(g_sel + 1) + ". " + tc.name + (tc.enabled ? "" : " (hidden)");
+        if (ImGui::BeginCombo("Editing", cur.c_str())) {
+            for (int i = 0; i < (int)cfg.tachos.size(); i++) {
+                std::string l = std::to_string(i + 1) + ". " + cfg.tachos[i].name + (cfg.tachos[i].enabled ? "" : " (hidden)");
+                if (ImGui::Selectable(l.c_str(), i == g_sel)) g_sel = i;
             }
             ImGui::EndCombo();
         }
-        const char* bm[] = {"Separate dials (max 4)", "Combined dial (average)"};
-        c |= ImGui::Combo("Multiple boons", &cfg.boonMode, bm, 2);
-        ImGui::TextDisabled("Might/Stability show stacks; other boons show on/off");
+        const bool room = (int)cfg.tachos.size() < kMaxTachos;
+        if (ImGui::Button("Add tacho") && room) g_action = 1;
+        ImGui::SameLine(); if (ImGui::Button("Duplicate") && room) g_action = 2;
+        ImGui::SameLine(); if (ImGui::Button("Remove") && cfg.tachos.size() > 1) g_action = 3;
+        char nb[48]; std::snprintf(nb, sizeof nb, "%s", tc.name.c_str());
+        if (ImGui::InputText("Name", nb, sizeof nb)) { tc.name = nb; c = true; }
+        c |= ImGui::Checkbox("Visible", &tc.enabled);
+        if (ImGui::Button("Lock all")) { for (auto& t : cfg.tachos) t.locked = true; c = true; }
+        ImGui::SameLine(); if (ImGui::Button("Unlock all")) { for (auto& t : cfg.tachos) t.locked = false; c = true; }
+        ImGui::SameLine();
+        if (ImGui::Button("Auto-arrange")) {   // lay the visible tachos out left to right
+            float x = 100.f;
+            for (size_t i = 0; i < cfg.tachos.size(); i++) if (cfg.tachos[i].enabled) { cfg.tachos[i].winX = x; cfg.tachos[i].winY = 100.f; g_rt[i].forcePos = true; x += cfg.tachos[i].winW + 12.f; }
+            c = true;
+        }
+        if (ImGui::Button("Copy theme")) { ImGui::SetClipboardText(tc.exportStyle().c_str()); g_note = "Theme copied to the clipboard"; }
+        ImGui::SameLine();
+        if (ImGui::Button("Paste theme")) {
+            const char* t = ImGui::GetClipboardText();
+            if (t && tc.importStyle(t)) { rt.forceSize = true; c = true; g_note = "Theme pasted"; } else g_note = "Clipboard has no Stability Tach theme";
+        }
+        if (!g_note.empty()) ImGui::TextDisabled("%s", g_note.c_str());
+        ImGui::TextDisabled("Right-click any tacho to edit it; drag to move; each has its own size, opacity and skin");
     }
-    if (ImGui::CollapsingHeader("Theme")) {
-        int pre = cfg.themePreset;
-        if (ImGui::Combo("Preset", &pre, kPresetNames, kPresetCount)) { cfg.applyPreset(pre); c = true; }
-        ImGui::TextDisabled("Car presets are original styles inspired by each cluster");
-        const char* types[] = {"Round dial (270)", "Half dial (180)", "Horizontal bar"};
-        const char* shapes[] = {"Circle", "Rounded square"};
-        const char* needles[] = {"Blade", "Thin line", "Wedge", "None"};
-        const char* fills[] = {"Solid", "LED segments"};
-        const char* ticks[] = {"None", "Major", "Major + minor"};
-        c |= ImGui::Combo("Type", &cfg.tType, types, 3);
-        c |= ImGui::Combo("Shape", &cfg.tShape, shapes, 2);
-        c |= ImGui::Combo("Needle style", &cfg.tNeedle, needles, 4);
-        c |= ImGui::Combo("Fill style", &cfg.tFill, fills, 2);
-        c |= ImGui::Combo("Tick marks", &cfg.tTicks, ticks, 3);
-        c |= ImGui::Checkbox("Redline zone", &cfg.tRedline);
-        c |= ImGui::SliderFloat("Bezel width", &cfg.tBezelW, 0.f, 14.f, "%.1f");
-        const ImGuiColorEditFlags ni = ImGuiColorEditFlags_NoInputs;
-        c |= ImGui::ColorEdit3("Face", cfg.cFace, ni);        c |= ImGui::ColorEdit3("Face centre", cfg.cFace2, ni);
-        c |= ImGui::ColorEdit3("Bezel", cfg.cBezel, ni);      c |= ImGui::ColorEdit3("Text", cfg.cText, ni);
-        c |= ImGui::ColorEdit3("Ticks / numbers", cfg.cTick, ni); c |= ImGui::ColorEdit3("Empty track", cfg.cTrack, ni);
-        c |= ImGui::ColorEdit3("Hub", cfg.cHub, ni);          c |= ImGui::ColorEdit3("Readout", cfg.cReadout, ni);
-        c |= ImGui::ColorEdit3("Maxed highlight", cfg.cMax, ni); c |= ImGui::ColorEdit3("Redline colour", cfg.cRedline, ni);
-    }
-    if (ImGui::CollapsingHeader("Stability colours")) {
-        c |= ImGui::Checkbox("Red-to-green by stacks", &cfg.gradient);
-        for (int i = 0; i < 5; i++) { char l[16]; snprintf(l, sizeof l, "Player %d", i + 1); c |= ImGui::ColorEdit3(l, cfg.playerCol[i], ImGuiColorEditFlags_NoInputs); }
-    }
-    if (ImGui::CollapsingHeader("Window", ImGuiTreeNodeFlags_DefaultOpen)) {
-        c |= ImGui::Checkbox("Lock position and size", &cfg.locked);
-        c |= ImGui::Checkbox("Click-through (use ArcDPS options to change settings)", &cfg.clickThrough);
-        if (ImGui::SliderFloat("Width (px)", &cfg.winW, 160.f, 1600.f, "%.0f")) { cfg.winH = cfg.winW * g_aspect; g_forceSize = true; c = true; }
-        c |= ImGui::SliderFloat("Opacity", &cfg.opacity, 0.1f, 1.f, "%.2f");
-        if (ImGui::Button("Reset position")) { cfg.winX = 100.f; cfg.winY = 100.f; g_forcePos = true; c = true; }
-    }
-    if (ImGui::CollapsingHeader("Fire")) {
-        c |= ImGui::Checkbox("Enable fire", &cfg.fireOn);
-        c |= ImGui::ColorEdit3("Fire colour", cfg.fireCol, ImGuiColorEditFlags_NoInputs);
-        c |= ImGui::SliderFloat("Intensity", &cfg.fireAmt, 2.f, 20.f, "%.0f");
-    }
-    if (ImGui::CollapsingHeader("Needle")) {
-        c |= ImGui::ColorEdit3("Needle colour", cfg.needleCol, ImGuiColorEditFlags_NoInputs);
-        c |= ImGui::SliderFloat("Length", &cfg.needleLen, 0.6f, 1.25f, "%.2f");
-        c |= ImGui::SliderFloat("Thickness", &cfg.needleThick, 1.f, 10.f, "%.1f");
-        c |= ImGui::SliderFloat("Response", &cfg.needleSmooth, 3.f, 40.f, "%.0f");
-    }
-    if (ImGui::CollapsingHeader("Skin image")) {
-        c |= ImGui::Checkbox("Show image", &cfg.imgOn);
-        c |= ImGui::Checkbox("Draw above needle", &cfg.imgAbove);
-        c |= ImGui::SliderFloat("Image size", &cfg.imgSize, 60.f, 280.f, "%.0f");
-        c |= ImGui::SliderFloat("Opacity##img", &cfg.imgOpacity, 0.1f, 1.f, "%.2f");
-        c |= ImGui::SliderFloat("Y offset", &cfg.imgYOff, -60.f, 120.f, "%.0f");
-        if (ImGui::Button("Reload skin file")) Skin::load(kSkinPath);
-        ImGui::TextDisabled("%s", kSkinPath);
-    }
+    DrawTachoOptions(tc, rt, c);
+
     if (ImGui::CollapsingHeader("Debug")) {
         if (ImGui::Checkbox("Write debug log", &cfg.debugLog)) { Log::setEnabled(cfg.debugLog); if (cfg.debugLog) LogHeader(); c = true; }
         c |= ImGui::Checkbox("Verbose (all buff events on tracked players)", &cfg.debugVerbose);
         c |= ImGui::SliderFloat("Feed delay (ms)", &cfg.eventDelayMs, 0.f, 5000.f, "%.0f");
         ImGui::TextDisabled("Only used by \"Delay-corrected timers\". ArcDPS feed delay is ~2.65s");
-        ImGui::TextDisabled("addons/arcdps/stability_tach/debug.log");
-        ImGui::TextDisabled("Rolls at 5 MB to debug.log.1 (max ~10 MB total)");
+        ImGui::TextDisabled("Skins: %s", Skin::deviceStatus().c_str());
+        ImGui::TextDisabled("addons/arcdps/stability_tach/debug.log (rolls at 5 MB)");
     }
-    if (ImGui::Button("Restore defaults")) { cfg.reset(); Log::setEnabled(cfg.debugLog); g_forceSize = g_forcePos = true; c = true; }
+    if (ImGui::Button("Reset this tacho")) { std::string n = tc.name; float x = tc.winX, y = tc.winY; tc = TachoCfg(); tc.name = n; tc.winX = x; tc.winY = y; rt.forceSize = rt.forcePos = true; c = true; }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset everything")) g_action = 4;
+
     g_dirty |= c;
 }
 
-// ---------------------------------------------------------------- window (render thread)
-static void keepAspect(ImGuiSizeCallbackData* d) { d->DesiredSize.y = d->DesiredSize.x * g_aspect; }
+// ---------------------------------------------------------------- windows (render thread)
+static void keepAspect(ImGuiSizeCallbackData* d) { d->DesiredSize.y = d->DesiredSize.x * (*static_cast<float*>(d->UserData)); }
 
 // Scales the alpha of every vertex the gauge drew (ImGui draw-list colours are absolute, so style alpha does not apply).
 static void ApplyOpacity(ImDrawList* dl, int from, float a) {
@@ -223,8 +317,45 @@ static void ApplyOpacity(ImDrawList* dl, int from, float a) {
     }
 }
 
+static void DrawTacho(int i, const std::vector<PartySlot>& slots) {
+    TachoCfg& tc = cfg.tachos[i];
+    TachoRt& rt = g_rt[i];
+    const ImVec2 design = GaugeDesignSize(tc);                 // layout depends on theme type + number of dials
+    const float aspect = design.y / design.x;
+    if (std::fabs(aspect - rt.aspect) > 1e-3f) { rt.aspect = aspect; rt.forceSize = true; }   // refit the window to the new layout
+
+    ImGui::SetNextWindowPos(ImVec2(tc.winX, tc.winY), rt.forcePos ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(tc.winW, tc.winW * rt.aspect), rt.forceSize ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+    rt.forcePos = rt.forceSize = false;   // applied this frame; if a slider changes them again below it re-arms for the next
+    ImGui::SetNextWindowSizeConstraints(ImVec2(160, 80), ImVec2(1600, 1600), keepAspect, &rt.aspect);
+    ImGuiWindowFlags fl = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
+    if (tc.locked) fl |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+    if (tc.clickThrough) fl |= ImGuiWindowFlags_NoMouseInputs;
+    char id[40]; std::snprintf(id, sizeof id, "##StabTach%d", i);
+    if (ImGui::Begin(id, nullptr, fl)) {
+        ImVec2 p = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const int vtx0 = dl->VtxBuffer.Size;
+        DrawGauge(slots, tc, dl, p, sz.x / design.x, ImGui::GetIO().DeltaTime, rt.gs);
+        ApplyOpacity(dl, vtx0, tc.opacity);
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(1)) g_sel = i;            // right-click edits THIS tacho
+        if (ImGui::BeginPopupContextWindow("stab_ctx")) { DrawSettings(); ImGui::EndPopup(); }
+        if (!rt.forceSize && !rt.forcePos && (p.x != tc.winX || p.y != tc.winY || sz.x != tc.winW || sz.y != tc.winH)) {   // skip while a slider is driving them
+            tc.winX = p.x; tc.winY = p.y; tc.winW = sz.x; tc.winH = sz.y; g_dirty = true;
+        }
+    }
+    ImGui::End();
+}
+
 static uintptr_t mod_imgui(uint32_t not_charsel_or_loading, uint32_t hide_if_combat_or_ooc) {
+    Skin::beginFrame();
+    ApplyPending();                          // add / duplicate / remove / reset requested last frame
     if (!not_charsel_or_loading) return 0;
+    syncRt();
+    int u = 0; for (auto& t : cfg.tachos) if (t.enabled) u |= t.boonMask;
+    g_boonUnion = u ? u : 1;
     if (Log::enabled()) {   // every 2s: roster + counters; every 10s: full player table
         static double last = 0; static int n = 0;
         double t = ImGui::GetTime();
@@ -246,37 +377,12 @@ static uintptr_t mod_imgui(uint32_t not_charsel_or_loading, uint32_t hide_if_com
         slots = tracker.snapshot(cfg.rosterMode, cfg.timerMode == 0);
         if (slots.size() < 2 && !cfg.showSolo) return 0;      // only usable in a party / squad
     }
-
-    const ImVec2 design = GaugeDesignSize(cfg);               // layout depends on theme type + number of dials
-    const float aspect = design.y / design.x;
-    if (std::fabs(aspect - g_aspect) > 1e-3f) { g_aspect = aspect; g_forceSize = true; }   // refit the window to the new layout
-
-    ImGui::SetNextWindowPos(ImVec2(cfg.winX, cfg.winY), g_forcePos ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(cfg.winW, cfg.winW * g_aspect), g_forceSize ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
-    g_forcePos = g_forceSize = false;   // applied this frame; if a slider changes them again below it re-arms for the next
-    ImGui::SetNextWindowSizeConstraints(ImVec2(160, 80), ImVec2(1600, 1600), keepAspect);
-    ImGuiWindowFlags fl = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
-    if (cfg.locked) fl |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
-    if (cfg.clickThrough) fl |= ImGuiWindowFlags_NoMouseInputs;
-    if (ImGui::Begin("##StabilityTach", nullptr, fl)) {
-        ImVec2 p = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const int vtx0 = dl->VtxBuffer.Size;
-        DrawGauge(slots, cfg, dl, p, sz.x / design.x, ImGui::GetIO().DeltaTime);
-        ApplyOpacity(dl, vtx0, cfg.opacity);
-        if (ImGui::BeginPopupContextWindow("stab_ctx")) { DrawSettings(); ImGui::EndPopup(); }   // right-click for options
-        if (!g_forceSize && !g_forcePos && (p.x != cfg.winX || p.y != cfg.winY || sz.x != cfg.winW || sz.y != cfg.winH)) {   // skip while a slider is driving them
-            cfg.winX = p.x; cfg.winY = p.y; cfg.winW = sz.x; cfg.winH = sz.y; g_dirty = true;
-        }
-    }
-    ImGui::End();
+    for (int i = 0; i < (int)cfg.tachos.size(); i++) if (cfg.tachos[i].enabled) DrawTacho(i, slots);
     if (g_dirty && !ImGui::IsMouseDown(0)) { cfg.save(); g_dirty = false; }
     return 0;
 }
 
-static uintptr_t mod_options_end() { DrawSettings(); return 0; }
+static uintptr_t mod_options_end() { DrawSettings(); ApplyPending(); return 0; }
 static uintptr_t mod_options_windows(const char* name) {
     if (!name) { if (ImGui::Checkbox("Stability Tach", &cfg.visible)) g_dirty = true; }
     return 0;
@@ -287,15 +393,15 @@ static arcdps_exports g_exports;
 
 static arcdps_exports* mod_init() {
     cfg.load();
+    syncRt();
     Log::setEnabled(cfg.debugLog);
+    Skin::init(g_d3d);           // works out the D3D11 device itself; images are loaded lazily when first drawn
     if (cfg.debugLog) LogHeader();
-    Skin::init(g_d3d, g_d3dver);
-    Skin::load(kSkinPath);       // optional: drop your PNG here to get the skin
     g_exports.size = sizeof(arcdps_exports);
     g_exports.sig = 0x57AB1117;  // unique plugin id
     g_exports.imguivers = IMGUI_VERSION_NUM;
     g_exports.out_name = "Stability Tach";
-    g_exports.out_build = "1.1.0";
+    g_exports.out_build = "1.2.0";
     g_exports.combat = (void*)mod_combat;
     g_exports.imgui = (void*)mod_imgui;
     g_exports.options_end = (void*)mod_options_end;
@@ -305,10 +411,10 @@ static arcdps_exports* mod_init() {
 
 static uintptr_t mod_release() { Log::write("==== shutdown ===="); cfg.save(); Skin::shutdown(); Log::setEnabled(false); return 0; }
 
-extern "C" __declspec(dllexport) void* get_init_addr(char*, ImGuiContext* ctx, void* id3d, HANDLE, void* mallocfn, void* freefn, uint32_t d3dversion) {
+extern "C" __declspec(dllexport) void* get_init_addr(char*, ImGuiContext* ctx, void* id3d, HANDLE, void* mallocfn, void* freefn, uint32_t lastArg) {
     ImGui::SetCurrentContext(ctx);
     ImGui::SetAllocatorFunctions((void* (*)(size_t, void*))mallocfn, (void (*)(void*, void*))freefn);
-    g_d3d = id3d; g_d3dver = d3dversion;
+    g_d3d = id3d; g_d3dArg = lastArg;   // lastArg is logged only: current ArcDPS passes something other than the D3D version
     return (void*)mod_init;
 }
 extern "C" __declspec(dllexport) void* get_release_addr() { return (void*)mod_release; }
