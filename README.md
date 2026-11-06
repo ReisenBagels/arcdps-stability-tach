@@ -150,4 +150,4 @@ artwork is included. This plugin only reads the combat events ArcDPS provides to
 
 ## License
 
-MIT - see [LICENSE](LICENSE). Replace the copyright holder with your name before publishing.
+MIT - see [LICENSE](LICENSE).
