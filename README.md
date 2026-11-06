@@ -17,10 +17,18 @@ Each 1000 rpm segment is one party member (name + stacks), so five players at fu
 | <b>Default theme</b><br><img src="docs/gifs/default-dial.gif" width="400" alt="Default theme"> | <b>Toyota Altezza preset</b><br><img src="docs/gifs/toyota-altezza.gif" width="400" alt="Toyota Altezza preset"> |
 | <b>Toyota Starlet preset</b><br><img src="docs/gifs/toyota-starlet.gif" width="400" alt="Toyota Starlet preset"> | <b>Lexus LFA preset</b><br><img src="docs/gifs/lexus-lfa.gif" width="400" alt="Lexus LFA preset"> |
 | <b>Half dial</b><br><img src="docs/gifs/half-dial.gif" width="400" alt="Half dial"> | <b>Shift-light bar</b><br><img src="docs/gifs/shift-bar.gif" width="400" alt="Shift-light bar"> |
-| <b>Combined dial (several boons averaged)</b><br><img src="docs/gifs/multi-boon-combined.gif" width="400" alt="Combined dial (several boons averaged)"> | <b>Customisation (fill, needle, ticks, colours)</b><br><img src="docs/gifs/customisation.gif" width="400" alt="Customisation (fill, needle, ticks, colours)"> |
-| <b>Window: resize and opacity</b><br><img src="docs/gifs/window-options.gif" width="400" alt="Window: resize and opacity"> | <b>Skin image (layering and opacity)</b><br><img src="docs/gifs/skin-image.gif" width="400" alt="Skin image (layering and opacity)"> |
+| <b>Combined dial (several boons averaged)</b><br><img src="docs/gifs/multi-boon-combined.gif" width="400" alt="Combined dial (several boons averaged)"> | <b>Default dial, themed by you</b><br><img src="docs/gifs/default-dial.gif" width="400" alt="Default dial, themed by you"> |
+| <b>Window: resize and opacity</b><br><img src="docs/gifs/window-options.gif" width="400" alt="Window: resize and opacity"> | <b>Customisation (fill, needle, ticks, colours)</b><br><img src="docs/gifs/customisation.gif" width="400" alt="Customisation (fill, needle, ticks, colours)"> |
 
-**Several boons at once, as separate dials** (Stability, Might, Fury, Quickness):
+| | |
+|---|---|
+| <b>GM Squarebody pickup preset</b><br><img src="docs/gifs/gm-squarebody.gif" width="400" alt="GM Squarebody pickup preset"> | <b>Skin image (layering and opacity)</b><br><img src="docs/gifs/skin-image.gif" width="400" alt="Skin image (layering and opacity)"> |
+
+**Several tachos at once**, each with its own theme, boons, size, opacity and skin:
+
+<img src="docs/gifs/multi-tacho.gif" width="720" alt="Three tachos with different themes">
+
+**Several boons on one tacho, as separate dials** (Stability, Might, Fury, Quickness): (Stability, Might, Fury, Quickness):
 
 <img src="docs/gifs/multi-boon-separate.gif" width="720" alt="Separate dials for four boons">
 
@@ -33,7 +41,15 @@ Regenerate them with `python3 tools/render_demos.py` (needs Pillow).
 - Only shows in a party/squad (2+ players); optional *Show when solo*.
 - Roster from your own subgroup, or the first 5 players seen.
 - Fire effect when everyone is maxed - on/off, colour and intensity are configurable.
-- Optional **skin image** (PNG/JPG) drawn at the dial centre, above or below the needle, with size/opacity/offset controls.
+- Optional **skin image** per tacho, drawn at the dial centre above or below the needle, with size/opacity/offset controls. Pick files from a dropdown
+  of your skins folder, see exactly why a file did not load, and open the folder from the options panel.
+
+**Multiple tachos**
+- Run up to 8 tachos at once. Each has its **own window** - position, size, opacity, lock and click-through - and its own **theme** (e.g. one
+  half dial, one shift bar, one Altezza), **boons**, colours, fire, needle and **skin image**.
+- Right-click a tacho to edit *that* tacho; add, duplicate, remove, rename and hide tachos from the options panel.
+- Quality-of-life: *Lock all / Unlock all*, *Auto-arrange* (lays windows out left to right), *Reset this tacho*, and **Copy theme / Paste theme**
+  to share a look as plain text (window position, name and skin path are not included).
 
 **Boons**
 - Track any of: Stability, Might, Fury, Quickness, Alacrity, Protection, Regeneration, Swiftness, Vigor, Aegis, Resistance, Resolution.
@@ -45,9 +61,9 @@ Regenerate them with `python3 tools/render_demos.py` (needs Pillow).
 - **Shape** (circle / rounded square), **needle style** (blade / thin line / wedge / none), **fill** (solid / LED segments),
   **ticks** (none / major / minor), **redline zone**, bezel width, and 10 colour slots (face, bezel, text, ticks, track, hub, readout, ...).
 - Per-player stability colours, or red-to-green by stack count.
-- Presets: *Default*, *Toyota Altezza*, *Toyota Starlet*, *Lexus LFA*, *Half dial*, *Shift bar*. The three car presets are
-  **original stylings inspired by** those clusters (white face / black face with amber readout / dark digital look) - not copies of any
-  manufacturer artwork - and are fully editable.
+- Presets: *Default*, *Toyota Altezza*, *Toyota Starlet*, *Lexus LFA*, *GM Squarebody pickup*, *Half dial*, *Shift bar*. The four vehicle presets are
+  **original stylings inspired by** those clusters (white face / black face with amber readout / dark digital look / 1970s-80s truck cluster in a
+  rounded-square housing) - not copies of any manufacturer artwork - and are fully editable.
 
 **Window**
 - Resize by dragging, or with the width slider (aspect ratio is kept); lock position & size; click-through; opacity; reset position.
@@ -67,7 +83,9 @@ Regenerate them with `python3 tools/render_demos.py` (needs Pillow).
 
 1. Download `d3d11_arcdps_stability_tach.dll` from the latest [Release](../../releases) (or the Actions artifact), or build it (below).
 2. Put it next to your other ArcDPS plugins and restart the game.
-3. *(Optional)* save a skin image as `addons/arcdps/stability_tach/skin.png`. No image is bundled - use art you have the right to use.
+3. *(Optional)* **skins:** put PNG/JPG/BMP/TGA/GIF files in `addons/arcdps/stability_tach/skins/` (right-click a tacho -> *Skin image* -> *Open skins folder*), then pick
+   one in the *File* dropdown. The default name is `skin.png`, also found in the older `addons/arcdps/stability_tach/` location. New files are picked up
+   automatically within a few seconds. No image is bundled - use art you have the right to use.
 
 Requires ArcDPS (DX11). The plugin must be built against the same Dear ImGui version as your ArcDPS: ArcDPS refuses to run the window on a
 version mismatch and logs `imgui version mismatch: A != B`. Set `ARC_IMGUI_TAG` in `CMakeLists.txt` (19270 = v1.92.7) and rebuild.
@@ -82,7 +100,7 @@ cmake --build build --config Release
 ```
 
 Output: `build/Release/d3d11_arcdps_stability_tach.dll`. CMake downloads Dear ImGui (pinned) and stb as zip files.
-Or push to GitHub: `.github/workflows/build.yml` builds on a Windows runner and attaches the DLL; pushing a tag like `v1.1.1` also creates a Release.
+Or push to GitHub: `.github/workflows/build.yml` builds on a Windows runner and attaches the DLL; pushing a tag like `v1.2.0` also creates a Release.
 
 ## How it works
 
@@ -97,16 +115,18 @@ the live set of buff stacks.
 
 ## Known limitations / status
 
-- Version 1.1.1 (themes, multi-boon) is new and lightly tested; the stability tracking itself was verified in-game against debug logs.
+- Version 1.2.0 (themes, multi-boon) is new and lightly tested; the stability tracking itself was verified in-game against debug logs.
 - Skill ids for the non-stability boons come from commonly published GW2 ids; if a boon reads wrong, enable the debug log.
 - Duration-stacking boons are assumed to report stack events like stability does; they are treated as on/off.
 - Car presets are approximations from memory and meant as starting points.
-- The skin image loads from a file; DX11 only.
+- Skins need DX11. **Skin loading fix (1.2.0):** earlier versions only started the image loader when ArcDPS's last init argument equalled 11, but current ArcDPS
+  passes a different value there (it logged as `19270`), so no image ever loaded. 1.2.0 asks the Direct3D pointer for its device instead, loads on the render
+  thread, and shows the result under *Skin image* (e.g. `File not found: ...` / `Loaded 512x768 from ...`).
 
 ## Project layout
 
 `src/main.cpp` plugin glue, event handling and options UI - `src/tracker.*` per-player boon stacks - `src/gauge.*` rendering and layouts -
-`src/settings.*` ini + theme presets - `src/boons.h` boon table - `src/skin.*` DX11 texture loader - `src/log.*` rolling log.
+`src/settings.*` per-tacho settings, ini (several tachos, old single-tacho inis still load), theme presets and theme sharing - `src/boons.h` boon table - `src/skin.*` DX11 texture loader - `src/log.*` rolling log.
 `tools/render_demos.py` generates the demo GIFs in `docs/gifs/`.
 `tests/` holds a logic test (stack tracking, presets, settings round trip) and stub headers for syntax-checking without Windows/ImGui.
 
@@ -124,10 +144,10 @@ the live set of buff stacks.
 
 ## Disclaimer
 
-Not affiliated with or endorsed by ArenaNet, NCSoft, deltaconnected, Toyota or Lexus. Guild Wars 2 is a trademark of NCSoft/ArenaNet; Toyota,
-Altezza, Starlet, Lexus and LFA are trademarks of their respective owners and are used only descriptively to name style presets. No third-party
+Not affiliated with or endorsed by ArenaNet, NCSoft, deltaconnected, Toyota, Lexus or General Motors. Guild Wars 2 is a trademark of NCSoft/ArenaNet; Toyota,
+Altezza, Starlet, Lexus, LFA, GM, Chevrolet and GMC are trademarks of their respective owners and are used only descriptively to name style presets. No third-party
 artwork is included. This plugin only reads the combat events ArcDPS provides to plugins; use it in line with ArenaNet's third-party tool policy.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE). 
